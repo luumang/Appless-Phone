@@ -8,6 +8,7 @@ export const A2UI_COMPONENT_TEXT: string = 'Text';
 export const A2UI_COMPONENT_ACTION_BAR: string = 'ActionBar';
 export const A2UI_COMPONENT_ERROR_NOTICE: string = 'ErrorNotice';
 export const A2UI_COMPONENT_THINKING_STREAM: string = 'ThinkingStream';
+export const A2UI_COMPONENT_THINKING_CARD: string = 'ThinkingCard';
 export const A2UI_COMPONENT_TRAIN_OPTIONS: string = 'TrainOptions';
 export const A2UI_COMPONENT_FLIGHT_BOARD: string = 'FlightBoard';
 export const A2UI_COMPONENT_FOOD_CHOICES: string = 'FoodChoices';
@@ -19,6 +20,7 @@ export interface A2uiAction {
   label: string;
   prompt: string;
   variant: string;
+  kind: string;
 }
 
 export interface A2uiLabelValueData {
@@ -35,6 +37,12 @@ export interface A2uiTrainData {
   duration: string;
   seats: string;
   status: string;
+  business: string;
+  first: string;
+  second: string;
+  noSeat: string;
+  hardSeat: string;
+  sleeperSoft: string;
 }
 
 export interface A2uiFlightData {
@@ -66,6 +74,12 @@ export interface A2uiTripData {
   rows: A2uiLabelValueData[];
 }
 
+export interface A2uiRowGroupsData {
+  train: A2uiLabelValueData[];
+  flight: A2uiLabelValueData[];
+  food: A2uiLabelValueData[];
+}
+
 export interface A2uiToolRequestData {
   toolId: string;
   prompt: string;
@@ -80,7 +94,9 @@ export interface A2uiRuntimeDataModel {
   thoughts: string[];
   summary: A2uiSummaryData;
   trip: A2uiTripData;
+  rowGroups: A2uiRowGroupsData;
   toolRequest: A2uiToolRequestData;
+  toolRequests?: A2uiToolRequestData[];
 }
 
 export type A2uiDataValue =
@@ -92,7 +108,9 @@ export type A2uiDataValue =
   string[] |
   A2uiSummaryData |
   A2uiTripData |
+  A2uiRowGroupsData |
   A2uiToolRequestData |
+  A2uiToolRequestData[] |
   string |
   number |
   boolean |
@@ -221,6 +239,7 @@ export function defaultA2uiCapabilities(): A2uiClientCapabilities {
       A2UI_COMPONENT_ACTION_BAR,
       A2UI_COMPONENT_ERROR_NOTICE,
       A2UI_COMPONENT_THINKING_STREAM,
+      A2UI_COMPONENT_THINKING_CARD,
       A2UI_COMPONENT_TRAIN_OPTIONS,
       A2UI_COMPONENT_FLIGHT_BOARD,
       A2UI_COMPONENT_FOOD_CHOICES,

@@ -39,11 +39,19 @@ function loadLocalEnv() {
 loadLocalEnv();
 
 const PORT = Number.parseInt(process.env.TOOL_GATEWAY_PORT || '8787', 10);
-const HOST = process.env.TOOL_GATEWAY_HOST || '0.0.0.0';
-const DEMO_MODE = process.env.TOOL_GATEWAY_DEMO === '1';
+const HOST = process.env.TOOL_GATEWAY_HOST || '127.0.0.1';
+const GATEWAY_API_KEY = (process.env.TOOL_GATEWAY_API_KEY || '').trim();
 const MAX_BODY_BYTES = 1024 * 1024;
 const A2UI_VERSION = 'v0.9.1';
 const A2UI_MIME = 'application/a2ui+json';
+const TRAIN_RESULT_LIMIT = Math.min(Math.max(Number.parseInt(process.env.TRAIN_RESULT_LIMIT || '30', 10) || 30, 6), 50);
+const TRAIN_INITIAL_VISIBLE = 6;
+const TRAIN_CLIENT_ACTIONS = [
+  { id: 'client_show_more', label: '多展示一些', prompt: 'client_show_more', kind: 'client', variant: 'primary' },
+  { id: 'client_sort_fastest', label: '选最快的', prompt: 'client_sort_fastest', kind: 'client', variant: 'secondary' },
+  { id: 'client_filter_available', label: '只看有票', prompt: 'client_filter_available', kind: 'client', variant: 'secondary' },
+  { id: 'client_edit_query', label: '修改查询', prompt: 'client_edit_query', kind: 'input', variant: 'secondary' }
+];
 
 process.on('uncaughtException', error => {
   console.error('[uncaughtException]', error);
@@ -68,7 +76,7 @@ const TOOL_DEFS = {
     providerHint: '12306 公开余票查询接口',
     requiredArgs: ['from_station', 'to_station', 'train_date'],
     configItems: ['无需注册即可查询 12306 余票摘要', '可选 TRAIN_MCP_URL 或 TRAIN_API_URL'],
-    actions: ['查询 12306', '换日期', '换车站']
+    actions: ['多展示一些', '选最快的', '修改查询']
   },
   'food.search': {
     title: '附近餐饮查询',
@@ -114,13 +122,30 @@ const HIGH_SPEED_DEFAULT_STATIONS = {
 
 let stationCache = null;
 
+function isGatewayAuthorized(req) {
+  if (GATEWAY_API_KEY.length === 0) {
+    return true;
+  }
+  const authHeader = textOf(req.headers.authorization).trim();
+  const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  const apiKey = textOf(req.headers['x-api-key']).trim() || bearer;
+  return apiKey.length > 0 && apiKey === GATEWAY_API_KEY;
+}
+
+function rejectUnauthorized(res) {
+  sendJson(res, 401, {
+    ok: false,
+    error: 'Unauthorized: set TOOL_GATEWAY_API_KEY and send Authorization: Bearer <key> or X-API-Key'
+  });
+}
+
 function sendJson(res, statusCode, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization'
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-API-Key'
   });
   res.end(body);
 }
@@ -132,7 +157,7 @@ function writeA2uiHeaders(res, statusCode = 200) {
     'Connection': 'keep-alive',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization'
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-API-Key'
   });
 }
 
@@ -226,7 +251,7 @@ function textOf(value) {
   return JSON.stringify(value);
 }
 
-function normalizeToolId(name, prompt) {
+function normalizeToolId(name) {
   const value = textOf(name).trim().toLowerCase().replaceAll('_', '.');
   if (value.includes('flight') || value.includes('航班') || value.includes('机票') || value.includes('飞机')) {
     return 'flight.search';
@@ -235,17 +260,6 @@ function normalizeToolId(name, prompt) {
     return 'train.search';
   }
   if (value.includes('food') || value.includes('meal') || value.includes('order') || value.includes('外卖') || value.includes('点餐')) {
-    return 'food.search';
-  }
-
-  const p = textOf(prompt);
-  if (/航班|机票|飞机/.test(p)) {
-    return 'flight.search';
-  }
-  if (/火车|高铁|动车|车票|12306/.test(p)) {
-    return 'train.search';
-  }
-  if (/外卖|点餐|午餐|晚餐|奶茶|咖啡/.test(p)) {
     return 'food.search';
   }
   return '';
@@ -287,21 +301,34 @@ function normalizeAction(action, index) {
       id: actionId(action, index),
       label: action,
       prompt: action,
-      variant: index === 0 ? 'primary' : 'secondary'
+      variant: index === 0 ? 'primary' : 'secondary',
+      kind: 'prompt'
     };
   }
   return {
     id: textOf(action?.id || actionId(action?.label, index)),
     label: textOf(action?.label || '继续'),
     prompt: textOf(action?.prompt || action?.label || '继续'),
-    variant: ['primary', 'secondary', 'danger'].includes(action?.variant) ? action.variant : 'secondary'
+    variant: ['primary', 'secondary', 'danger'].includes(action?.variant) ? action.variant : 'secondary',
+    kind: ['prompt', 'client', 'input'].includes(action?.kind) ? action.kind : 'prompt'
   };
+}
+
+function cardRawItems(card) {
+  if (Array.isArray(card.items) && card.items.length > 0) {
+    return card.items;
+  }
+  if (Array.isArray(card.bullets) && card.bullets.length > 0) {
+    return card.bullets;
+  }
+  return [];
 }
 
 function normalizeCard(card, index) {
   const kind = cardKind(card);
   const toolId = textOf(card.toolId || card.toolName);
   const status = textOf(card.status || (kind === 'tool_result' ? 'success' : (kind === 'error' ? 'error' : 'idle')));
+  const rawItems = cardRawItems(card);
   return {
     id: textOf(card.id || `card_${index}`),
     kind,
@@ -313,7 +340,8 @@ function normalizeCard(card, index) {
       label: textOf(row?.label || ''),
       value: textOf(row?.value || '')
     })) : [],
-    bullets: Array.isArray(card.bullets) ? card.bullets.map(textOf) : (Array.isArray(card.items) ? card.items.map(textOf) : []),
+    rawItems,
+    bullets: rawItems.map(item => (typeof item === 'object' && item !== null ? trainItemText(item) : textOf(item))),
     actions: Array.isArray(card.actions) ? card.actions.map(normalizeAction) : []
   };
 }
@@ -389,7 +417,13 @@ function parseTrainItem(item) {
     arrive: timeParts[1] || '',
     duration: parts[3] || '',
     seats: seatsIndex > 0 ? text.slice(seatsIndex) : parts.slice(4).join(' '),
-    status: '可查询'
+    status: '可查询',
+    business: '',
+    first: '',
+    second: '',
+    noSeat: '',
+    hardSeat: '',
+    sleeperSoft: ''
   };
 }
 
@@ -434,7 +468,13 @@ function dataForCard(toolName, card) {
     return card.rows;
   }
   if (toolName === 'train.search') {
-    return card.bullets.map(parseTrainItem);
+    const sourceItems = Array.isArray(card.rawItems) && card.rawItems.length > 0 ? card.rawItems : card.bullets;
+    return sourceItems.map(item => {
+      if (typeof item === 'object' && item !== null && textOf(item.trainCode).length > 0) {
+        return trainRecordForA2ui(item);
+      }
+      return parseTrainItem(item);
+    });
   }
   if (toolName === 'flight.search') {
     return card.bullets.map(parseFlightItem);
@@ -524,6 +564,26 @@ function pendingA2ui(toolName, prompt) {
       }
     }
   ]);
+}
+
+function toolExceptionResponse(toolName, error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return generated(
+    '工具调用过程中出现异常。',
+    [
+      {
+        type: 'tool_required',
+        title: '工具调用异常',
+        body: message.slice(0, 700),
+        toolName,
+        items: [
+          '后端网关已收到请求，但供应商调用或流式写入中断。',
+          '请检查供应商网络、Key、配额，或查看 gateway stderr。'
+        ],
+        actions: ['重新查询', '检查网关日志']
+      }
+    ]
+  );
 }
 
 function generated(text, cards) {
@@ -705,9 +765,137 @@ function joinedArgs(args) {
   return `${textOf(args.prompt)} ${JSON.stringify(args.items || [])} ${JSON.stringify(args.arguments || {})}`;
 }
 
+function parseChineseNumberToken(token) {
+  const raw = textOf(token).trim();
+  if (/^\d+$/.test(raw)) {
+    return Number.parseInt(raw, 10);
+  }
+  const map = {
+    '零': 0, '一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
+    '六': 6, '七': 7, '八': 8, '九': 9, '十': 10
+  };
+  if (raw.length === 1 && map[raw] !== undefined) {
+    return map[raw];
+  }
+  if (raw.startsWith('十') && raw.length === 2 && map[raw.slice(1)] !== undefined) {
+    return 10 + map[raw.slice(1)];
+  }
+  if (raw.endsWith('十') && raw.length === 2 && map[raw.slice(0, 1)] !== undefined) {
+    return map[raw.slice(0, 1)] * 10;
+  }
+  const tens = raw.match(/^([一二三四五六七八九])十([一二三四五六七八九])?$/);
+  if (tens) {
+    return (map[tens[1]] || 0) * 10 + (tens[2] ? map[tens[2]] : 0);
+  }
+  return -1;
+}
+
+function parseDepartAfter(source) {
+  const text = textOf(source);
+  const colon = text.match(/(\d{1,2})\s*[:：]\s*(\d{2})\s*(?:之)?(?:后|以后|之后|起)?/);
+  if (colon) {
+    const hour = Number.parseInt(colon[1], 10);
+    const minute = Number.parseInt(colon[2], 10);
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    }
+  }
+  const point = text.match(/(凌晨|早上|上午|中午|下午|傍晚|晚上|夜间)?\s*([零一二三四五六七八九十两\d]{1,4})\s*点(?:\s*([零一二三四五六七八九十\d]{1,2})\s*分)?(?:\s*(?:之)?(?:后|以后|之后|起))?/);
+  if (point) {
+    let hour = parseChineseNumberToken(point[2]);
+    const minute = point[3] ? parseChineseNumberToken(point[3]) : 0;
+    if (hour < 0) {
+      return '';
+    }
+    const period = point[1] || '';
+    if ((period === '下午' || period === '晚上' || period === '傍晚') && hour >= 1 && hour <= 11) {
+      hour += 12;
+    }
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    }
+  }
+  return '';
+}
+
+function filterTrainsByDepartAfter(trains, afterTime) {
+  if (!afterTime) {
+    return trains;
+  }
+  return trains.filter(item => {
+    const depart = textOf(item.depart);
+    if (depart.length < 4) {
+      return true;
+    }
+    const hhmm = depart.length >= 5 ? depart.slice(0, 5) : depart;
+    return hhmm >= afterTime;
+  });
+}
+
+function formatTrainSeatsSummary(item) {
+  const seats = [];
+  if (item.business) {
+    seats.push(`商务 ${item.business}`);
+  }
+  if (item.first) {
+    seats.push(`一等 ${item.first}`);
+  }
+  if (item.second) {
+    seats.push(`二等 ${item.second}`);
+  }
+  if (item.sleeperSoft) {
+    seats.push(`卧铺 ${item.sleeperSoft}`);
+  }
+  if (item.hardSeat) {
+    seats.push(`硬座 ${item.hardSeat}`);
+  }
+  if (item.noSeat) {
+    seats.push(`无座 ${item.noSeat}`);
+  }
+  return seats.join(' / ');
+}
+
+function trainRecordForA2ui(item) {
+  return {
+    trainCode: textOf(item.trainCode),
+    from: textOf(item.from),
+    to: textOf(item.to),
+    depart: textOf(item.depart),
+    arrive: textOf(item.arrive),
+    duration: textOf(item.duration),
+    seats: textOf(item.seats).length > 0 ? textOf(item.seats) : formatTrainSeatsSummary(item),
+    status: textOf(item.status).length > 0 ? textOf(item.status) : '计划',
+    business: textOf(item.business),
+    first: textOf(item.first),
+    second: textOf(item.second),
+    noSeat: textOf(item.noSeat),
+    hardSeat: textOf(item.hardSeat),
+    sleeperSoft: textOf(item.sleeperSoft)
+  };
+}
+
 function extractRouteNames(source, candidates) {
   const text = textOf(source);
-  const direct = text.match(/([\u4e00-\u9fa5]{2,8})\s*(?:到|去|至|飞)\s*([\u4e00-\u9fa5]{2,8})/);
+
+  const departRoute = text.match(/(?:从)?([\u4e00-\u9fa5]{2,12})\s*出发\s*(?:到|去|至)\s*([\u4e00-\u9fa5]{2,12})/);
+  if (departRoute) {
+    const fromCandidate = findCandidateInRoutePart(departRoute[1], candidates, true);
+    const toCandidate = findCandidateInRoutePart(departRoute[2], candidates, false);
+    if (fromCandidate.length > 0 && toCandidate.length > 0) {
+      return [fromCandidate, toCandidate];
+    }
+  }
+
+  const stationRoute = text.match(/([\u4e00-\u9fa5]{2,12})站\s*(?:到|去|至)\s*([\u4e00-\u9fa5]{2,12})站/);
+  if (stationRoute) {
+    const fromCandidate = findCandidateInRoutePart(stationRoute[1], candidates, true);
+    const toCandidate = findCandidateInRoutePart(stationRoute[2], candidates, false);
+    if (fromCandidate.length > 0 && toCandidate.length > 0) {
+      return [fromCandidate, toCandidate];
+    }
+  }
+
+  const direct = text.match(/([\u4e00-\u9fa5]{2,12})\s*(?:到|去|至|飞)\s*([\u4e00-\u9fa5]{2,12})/);
   if (direct) {
     const fromCandidate = findCandidateInRoutePart(direct[1], candidates, true);
     const toCandidate = findCandidateInRoutePart(direct[2], candidates, false);
@@ -835,6 +1023,7 @@ async function call12306TrainSearch(args) {
   const stations = await load12306Stations();
   const routeNames = extractRouteNames(source, stations.names);
   const date = parseTravelDate(source);
+  const departAfter = parseDepartAfter(source);
 
   if (routeNames.length < 2 || date.length === 0) {
     return generated(
@@ -896,35 +1085,49 @@ async function call12306TrainSearch(args) {
   const payload = await response.json();
   const rows = Array.isArray(payload?.data?.result) ? payload.data.result : [];
   const parsed = rows.map(row => parse12306Row(row, payload.data.map || {}));
-  const filtered = /高铁|动车|\bG\d+|\bD\d+/.test(source) ? parsed.filter(item => /^G|^D/.test(item.trainCode)) : parsed;
-  const top = filtered.slice(0, 6);
+  let filtered = /高铁|动车|\bG\d+|\bD\d+/.test(source) ? parsed.filter(item => /^G|^D/.test(item.trainCode)) : parsed;
+  if (departAfter.length > 0) {
+    filtered = filterTrainsByDepartAfter(filtered, departAfter);
+  }
+  const top = filtered.slice(0, TRAIN_RESULT_LIMIT);
+  const timeSummary = departAfter.length > 0 ? `${departAfter} 后` : '';
 
   if (top.length === 0) {
+    const emptyBody = timeSummary.length > 0
+      ? `${date} ${fromName} 到 ${toName} ${timeSummary}暂时没有查询到可展示车次，可尝试调整时段或日期。`
+      : `${date} ${fromName} 到 ${toName} 暂时没有查询到可展示车次，可能是日期未开售、线路调整或接口限制。`;
     return generated(
       '12306 暂无可展示车次。',
       [
         {
           type: 'info',
           title: '12306 查询结果为空',
-          body: `${date} ${fromName} 到 ${toName} 暂时没有查询到可展示车次，可能是日期未开售、线路调整或接口限制。`,
+          body: emptyBody,
           toolName: 'train.search',
           items: [],
-          actions: ['换个日期', '换个车站']
+          actions: TRAIN_CLIENT_ACTIONS
         }
       ]
     );
   }
 
+  const summaryText = timeSummary.length > 0
+    ? `已从 12306 查询到 ${date} ${fromName} 到 ${toName} ${timeSummary}的车次。`
+    : `已从 12306 查询到 ${date} ${fromName} 到 ${toName} 的车次。`;
+  const resultBody = timeSummary.length > 0
+    ? `以下为 ${timeSummary}出发的 12306 实时查询结果，默认先展示 ${TRAIN_INITIAL_VISIBLE} 趟。`
+    : `以下为 12306 实时查询结果摘要，默认先展示 ${TRAIN_INITIAL_VISIBLE} 趟。`;
+
   return generated(
-    `已从 12306 查询到 ${date} ${fromName} 到 ${toName} 的车次。`,
+    summaryText,
     [
       {
         type: 'choice_list',
         title: '12306 余票查询',
-        body: '以下为 12306 实时查询结果摘要。',
+        body: resultBody,
         toolName: 'train.search',
-        items: top.map(trainItemText),
-        actions: ['换个时间', '换个车站']
+        items: top.map(trainRecordForA2ui),
+        actions: TRAIN_CLIENT_ACTIONS
       }
     ]
   );
@@ -1186,14 +1389,162 @@ async function callVariFlightSearch(args) {
   );
 }
 
-function extractLocation(source) {
-  const configured = process.env.AMAP_DEFAULT_LOCATION || process.env.FOOD_DEFAULT_LOCATION || '';
-  const text = `${textOf(source)} ${configured}`;
-  const match = text.match(/(-?\d{2,3}\.\d+)\s*,\s*(-?\d{1,2}\.\d+)/);
+function parseCoordinatePair(text) {
+  const match = textOf(text).match(/(-?\d{2,3}\.\d+)\s*,\s*(-?\d{1,2}\.\d+)/);
   if (!match) {
     return '';
   }
   return `${match[1]},${match[2]}`;
+}
+
+function defaultConfiguredLocation() {
+  const configured = process.env.AMAP_DEFAULT_LOCATION || process.env.FOOD_DEFAULT_LOCATION || '';
+  return parseCoordinatePair(configured);
+}
+
+function extractLocation(source) {
+  return parseCoordinatePair(source) || defaultConfiguredLocation();
+}
+
+function extractFoodQuery(source) {
+  const text = textOf(source).trim();
+  const cleaned = text.replace(/^帮我(?:搜索|查|找|搜)?/u, '').trim();
+  const nearPatterns = [
+    /^(.+?)附近(?:的)?(.+)$/u,
+    /^(.+?)周边(?:的)?(.+)$/u,
+    /^(.+?)周围(?:的)?(.+)$/u
+  ];
+  for (const pattern of nearPatterns) {
+    const match = cleaned.match(pattern);
+    if (match && match[1] && match[2]) {
+      return {
+        place: match[1].trim(),
+        keyword: match[2].trim()
+      };
+    }
+  }
+  return { place: '', keyword: '' };
+}
+
+function extractFoodKeyword(source) {
+  const query = extractFoodQuery(source);
+  if (query.keyword.length > 0) {
+    return query.keyword;
+  }
+  const preset = /椰子鸡|椰子|火锅|烧烤|咖啡|奶茶|晚餐|午餐|早餐|快餐|餐厅|饭店|美食/u.exec(textOf(source));
+  if (preset) {
+    return preset[0];
+  }
+  return '餐饮';
+}
+
+function inferAmapCityFromPlace(place) {
+  const match = textOf(place).match(/^(北京|上海|天津|重庆|深圳|广州|杭州|成都|武汉|南京|西安|东莞|佛山)/u);
+  return match ? match[1] : '';
+}
+
+function isLandmarkPlace(place) {
+  return /华为|基地|园区|总部|云谷|大学|医院|站|广场|大厦|小区/u.test(textOf(place));
+}
+
+async function geocodeAmapAddressDetail(address, key) {
+  const trimmed = textOf(address).trim();
+  if (trimmed.length === 0 || key.length === 0) {
+    return { location: '', formatted: '', level: '' };
+  }
+  const url = new URL('https://restapi.amap.com/v3/geocode/geo');
+  url.searchParams.set('key', key);
+  url.searchParams.set('address', trimmed);
+  const city = inferAmapCityFromPlace(trimmed);
+  if (city.length > 0) {
+    url.searchParams.set('city', city);
+  }
+  const response = await fetch(url);
+  const payload = await response.json();
+  if (payload.status !== '1' || !Array.isArray(payload.geocodes) || payload.geocodes.length === 0) {
+    return { location: '', formatted: '', level: '' };
+  }
+  const first = payload.geocodes[0];
+  return {
+    location: textOf(first.location),
+    formatted: textOf(first.formatted_address),
+    level: textOf(first.level)
+  };
+}
+
+async function searchAmapPoiLocation(keywords, city, key) {
+  const trimmed = textOf(keywords).trim();
+  if (trimmed.length === 0 || key.length === 0) {
+    return { location: '', name: '', address: '' };
+  }
+  const url = new URL('https://restapi.amap.com/v3/place/text');
+  url.searchParams.set('key', key);
+  url.searchParams.set('keywords', trimmed);
+  if (textOf(city).length > 0) {
+    url.searchParams.set('city', city);
+  }
+  url.searchParams.set('offset', '5');
+  url.searchParams.set('page', '1');
+  const response = await fetch(url);
+  const payload = await response.json();
+  if (payload.status !== '1' || !Array.isArray(payload.pois) || payload.pois.length === 0) {
+    return { location: '', name: '', address: '' };
+  }
+  const first = payload.pois[0];
+  return {
+    location: textOf(first.location),
+    name: textOf(first.name),
+    address: textOf(first.address)
+  };
+}
+
+async function resolveFoodSearchLocation(place, key) {
+  const city = inferAmapCityFromPlace(place) || '深圳';
+  if (isLandmarkPlace(place)) {
+    const poi = await searchAmapPoiLocation(place, city, key);
+    if (poi.location.length > 0) {
+      return {
+        location: poi.location,
+        locationSource: 'poi_text',
+        locationLabel: poi.name.length > 0 ? poi.name : poi.address
+      };
+    }
+  }
+  const geo = await geocodeAmapAddressDetail(place, key);
+  if (geo.location.length > 0) {
+    return {
+      location: geo.location,
+      locationSource: 'geocode',
+      locationLabel: geo.formatted.length > 0 ? geo.formatted : geo.level
+    };
+  }
+  const poi = await searchAmapPoiLocation(place, city, key);
+  if (poi.location.length > 0) {
+    return {
+      location: poi.location,
+      locationSource: 'poi_text',
+      locationLabel: poi.name.length > 0 ? poi.name : poi.address
+    };
+  }
+  return { location: '', locationSource: 'none', locationLabel: '' };
+}
+
+function debugFoodSearchLog(payload) {
+  // #region agent log
+  fetch('http://127.0.0.1:7355/ingest/8ffaedf3-167e-4382-a899-3823430060c5', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '65c5d6' },
+    body: JSON.stringify({
+      sessionId: '65c5d6',
+      runId: payload.runId || 'pre-fix',
+      hypothesisId: payload.hypothesisId || 'C',
+      location: 'server.mjs:callAmapFoodSearch',
+      message: payload.message || 'food search params',
+      data: payload.data || {},
+      timestamp: Date.now()
+    })
+  }).catch(() => {});
+  // #endregion
 }
 
 async function callAmapFoodSearch(args) {
@@ -1202,25 +1553,63 @@ async function callAmapFoodSearch(args) {
     return missingConfigResponse('food.search', args);
   }
 
-  const source = joinedArgs(args);
-  const location = extractLocation(source);
+  const promptText = textOf(args.prompt);
+  const query = extractFoodQuery(promptText);
+  let locationSource = 'none';
+  let location = parseCoordinatePair(promptText);
+  if (location.length > 0) {
+    locationSource = 'prompt_coords';
+  } else if (query.place.length > 0) {
+    const resolved = await resolveFoodSearchLocation(query.place, key);
+    location = resolved.location;
+    locationSource = resolved.locationSource;
+    debugFoodSearchLog({
+      hypothesisId: 'A',
+      message: 'food location resolved',
+      data: {
+        place: query.place,
+        locationSource: resolved.locationSource,
+        location: resolved.location,
+        locationLabel: resolved.locationLabel
+      }
+    });
+  }
+  if (location.length === 0) {
+    location = defaultConfiguredLocation();
+    if (location.length > 0) {
+      locationSource = 'env_default';
+    }
+  }
+
+  const keyword = extractFoodKeyword(promptText);
+
+  debugFoodSearchLog({
+    hypothesisId: 'C',
+    data: {
+      place: query.place,
+      keyword,
+      locationSource,
+      locationPresent: location.length > 0,
+      promptChars: promptText.length
+    }
+  });
+
   if (location.length === 0) {
     return generated(
       '附近餐饮查询需要位置。',
       [
         {
           type: 'tool_required',
-          title: '需要位置授权或默认坐标',
-          body: '高德周边搜索需要经纬度。你可以在环境变量 AMAP_DEFAULT_LOCATION 中填入经度,纬度，例如 116.397428,39.90923。',
+          title: '需要位置或默认坐标',
+          body: '高德周边搜索需要经纬度。请在 prompt 中写明「地点附近的餐饮」，或配置 AMAP_DEFAULT_LOCATION=经度,纬度。',
           toolName: 'food.search',
-          items: ['需要 AMAP_KEY', '需要 AMAP_DEFAULT_LOCATION 或用户授权位置'],
+          items: ['需要 AMAP_KEY', '需要地点文本或 AMAP_DEFAULT_LOCATION'],
           actions: ['配置默认坐标', '换查询位置']
         }
       ]
     );
   }
 
-  const keyword = /咖啡|奶茶|晚餐|午餐|早餐|快餐/.exec(source)?.[0] || '餐饮';
   const url = new URL('https://restapi.amap.com/v3/place/around');
   url.searchParams.set('key', key);
   url.searchParams.set('location', location);
@@ -1249,7 +1638,35 @@ async function callAmapFoodSearch(args) {
     );
   }
 
-  const pois = Array.isArray(payload.pois) ? payload.pois.slice(0, 8) : [];
+  const seenNames = new Set();
+  const pois = Array.isArray(payload.pois)
+    ? payload.pois.filter(poi => {
+      const name = textOf(poi.name);
+      if (name.length === 0 || seenNames.has(name)) {
+        return false;
+      }
+      seenNames.add(name);
+      return true;
+    }).slice(0, 8)
+    : [];
+
+  debugFoodSearchLog({
+    hypothesisId: 'A',
+    message: 'food poi results',
+    data: {
+      place: query.place,
+      keyword,
+      location,
+      locationSource,
+      radius: process.env.AMAP_RADIUS || '3000',
+      poiCount: pois.length,
+      poiPreview: pois.map(poi => ({
+        name: textOf(poi.name),
+        distance: textOf(poi.distance)
+      }))
+    }
+  });
+
   return generated(
     `已通过高德查询到附近餐饮 POI。`,
     [
@@ -1289,26 +1706,6 @@ function missingConfigResponse(toolName, args) {
         toolName,
         items,
         actions: def ? def.actions : ['补充配置']
-      }
-    ]
-  );
-}
-
-function demoResponse(toolName, args) {
-  const title = TOOL_DEFS[toolName]?.title || '工具调用';
-  return generated(
-    `${title}暂未连接实时供应商。`,
-    [
-      {
-        type: 'info',
-        title: `${title}暂未返回实时结果`,
-        body: '当前网关未连接实时供应商，请配置对应 API 或 MCP 服务后重新查询。',
-        toolName,
-        items: [
-          `请求：${textOf(args.prompt).slice(0, 160)}`,
-          '需要配置供应商 API 或 MCP 服务。'
-        ],
-        actions: ['配置供应商', '重新查询']
       }
     ]
   );
@@ -1445,15 +1842,11 @@ async function callTool(toolName, args) {
           title: '未知工具',
           body: '当前网关只支持航班查询、火车票查询和附近餐饮查询。',
           toolName,
-          items: Object.values(TOOL_DEFS).map(def => def.title),
-          actions: ['选择工具', '补充需求']
+          items: [],
+          actions: []
         }
       ]
     );
-  }
-
-  if (DEMO_MODE) {
-    return demoResponse(toolName, args);
   }
 
   const config = providerConfig(toolName);
@@ -1477,24 +1870,20 @@ async function callTool(toolName, args) {
 
 async function handleAiphoneTool(req, res) {
   const body = await readJson(req);
-  const toolName = normalizeToolId(body.toolId, body.prompt);
+  const toolName = normalizeToolId(body.toolId);
   const requestedSurfaceId = textOf(body.surfaceId).trim();
   if (toolName.length === 0) {
     writeA2uiHeaders(res, 200);
     await writeA2uiStream(res, rewriteA2uiSurfaceId(generated(
-      '需要选择工具。',
+      '工具调用缺少 toolId。',
       [
         {
-          kind: 'error',
-          title: '无法判断工具类型',
-          body: '请说明要查航班、火车票，还是附近餐饮。',
+          type: 'tool_required',
+          title: '缺少真实工具 ID',
+          body: '工具网关只执行模型或客户端已经明确选择的真实工具；不会根据 prompt 静默生成候选项或占位结果。',
           status: 'needs_input',
-          bullets: ['航班查询', '火车票查询', '附近餐饮查询'],
-          actions: [
-            { id: 'choose_flight', label: '查航班', prompt: '我要查询航班信息', variant: 'primary' },
-            { id: 'choose_train', label: '查火车票', prompt: '我要查询火车票信息', variant: 'secondary' },
-            { id: 'choose_food', label: '查餐饮', prompt: '我要查询附近餐饮', variant: 'secondary' }
-          ]
+          items: [],
+          actions: []
         }
       ]
     ), requestedSurfaceId));
@@ -1504,18 +1893,24 @@ async function handleAiphoneTool(req, res) {
 
   writeA2uiHeaders(res, 200);
   await writeA2uiStream(res, rewriteA2uiSurfaceId(pendingA2ui(toolName, body.prompt || ''), requestedSurfaceId));
-  const result = await callTool(toolName, {
-    prompt: body.prompt || '',
-    items: requestItems(body),
-    arguments: body.arguments || {}
-  });
+  let result = '';
+  try {
+    result = await callTool(toolName, {
+      prompt: body.prompt || '',
+      items: requestItems(body),
+      arguments: body.arguments || {}
+    });
+  } catch (error) {
+    console.error('[toolError]', toolName, error);
+    result = toolExceptionResponse(toolName, error);
+  }
   await writeA2uiStream(res, rewriteA2uiSurfaceId(result, requestedSurfaceId));
   res.end();
 }
 
 async function handleMcpCall(req, res) {
   const body = await readJson(req);
-  const toolName = normalizeToolId(body.name, JSON.stringify(body.arguments || {}));
+  const toolName = normalizeToolId(body.name);
   const result = await callTool(toolName, {
     prompt: body.arguments?.prompt || '',
     items: body.arguments?.items || [],
@@ -1559,7 +1954,6 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, {
         ok: true,
         gateway: 'AIPhone Tool Gateway',
-        demoMode: DEMO_MODE,
         tools: Object.keys(TOOL_DEFS)
       });
       return;
@@ -1569,10 +1963,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/mcp/call') {
+      if (!isGatewayAuthorized(req)) {
+        rejectUnauthorized(res);
+        return;
+      }
       await handleMcpCall(req, res);
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/aiphone/tool') {
+      if (!isGatewayAuthorized(req)) {
+        rejectUnauthorized(res);
+        return;
+      }
       await handleAiphoneTool(req, res);
       return;
     }
@@ -1582,6 +1984,11 @@ const server = http.createServer(async (req, res) => {
       error: 'Not found'
     });
   } catch (error) {
+    console.error('[requestError]', error);
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
     sendJson(res, 500, {
       ok: false,
       error: error instanceof Error ? error.message : String(error)

@@ -1,6 +1,6 @@
 {
   "app": {
-    "bundleName": "com.xiaoluolyg.pocketagent",
+    "bundleName": "com.example.aiphonedemo",
     "vendor": "XiaoLuoLYG",
     "versionCode": 1000000,
     "versionName": "1.0.0",

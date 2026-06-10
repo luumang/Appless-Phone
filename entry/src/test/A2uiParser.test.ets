@@ -2,15 +2,22 @@ import { describe, it, expect } from '@ohos/hypium';
 import { parseA2uiEnvelope, parseA2uiJsonl, parseA2uiJsonlChunk } from '../main/ets/model/A2uiParser';
 import { A2uiSurfaceStore } from '../main/ets/model/A2uiSurfaceStore';
 import { componentById, labelValues, toolRequest, trainOptions } from '../main/ets/model/A2uiData';
-import { extractA2uiJsonlFromModelChunk, parseSseReasoningContent, splitModelThinkFromContent } from '../main/ets/model/LocalModelClient';
+import {
+  appendThinkingStream,
+  extractA2uiJsonlFromModelChunk,
+  modelThinkCloseSeen,
+  normalizeAssistantDebugDisplay,
+  parseSseReasoningContent,
+  splitModelThinkFromContent
+} from '../main/ets/model/LocalModelClient';
 
 export default function a2uiParserTest() {
   describe('a2uiParser', () => {
     it('builds a surface from A2UI JSONL envelopes', 0, () => {
       const stream =
         '{"version":"v0.9.1","createSurface":{"surfaceId":"travel","root":"root","title":"北京到上海","intent":"travel","status":"thinking"}}\n' +
-        '{"version":"v0.9.1","updateComponents":{"surfaceId":"travel","components":[{"id":"train","component":"TrainOptions","title":"高铁候选","dataPath":"/trains","actions":[{"id":"change_time","label":"换时间","prompt":"换个时间查询","variant":"secondary"}]},{"id":"root","component":"SurfaceRoot","child":"train","title":"北京到上海","status":"ready"}]}}\n' +
-        '{"version":"v0.9.1","updateDataModel":{"surfaceId":"travel","path":"/trains","value":[{"trainCode":"G1","from":"北京南","to":"上海虹桥","depart":"06:30","arrive":"11:24","duration":"04:54","seats":"二等 有","status":"计划"}]}}\n';
+        '{"version":"v0.9.1","updateComponents":{"surfaceId":"travel","components":[{"id":"train","component":"TrainOptions","title":"高铁候选","dataPath":"/trains","actions":[{"id":"client_show_more","label":"多展示一些","prompt":"client_show_more","variant":"primary","kind":"client"}]},{"id":"root","component":"SurfaceRoot","child":"train","title":"北京到上海","status":"ready"}]}}\n' +
+        '{"version":"v0.9.1","updateDataModel":{"surfaceId":"travel","path":"/trains","value":[{"trainCode":"G1","from":"北京南","to":"上海虹桥","depart":"06:30","arrive":"11:24","duration":"04:54","seats":"二等 有","status":"计划","business":"","first":"","second":"有","noSeat":"","hardSeat":"","sleeperSoft":""}]}}\n';
       const parsed = parseA2uiJsonl(stream);
       const store = new A2uiSurfaceStore();
 
@@ -95,6 +102,30 @@ export default function a2uiParserTest() {
       expect(parsed.envelopes.length).assertEqual(1);
     });
 
+    it('extracts think blocks from qwen think tags', 0, () => {
+      const openTag = '<' + 'think' + '>';
+      const closeTag = '</' + 'think' + '>';
+      const split = splitModelThinkFromContent(openTag + '正在确认工具' + closeTag + '\n{"version":"v0.9.1"}');
+
+      expect(split.think).assertEqual('正在确认工具');
+      expect(split.content.indexOf('{"version"')).assertLarger(-1);
+      expect(split.inThink).assertFalse();
+    });
+
+    it('detects redacted thinking close tag', 0, () => {
+      expect(modelThinkCloseSeen('分析完成</think>\n{"version":"v0.9.1"}')).assertTrue();
+      expect(modelThinkCloseSeen('还在思考中')).assertFalse();
+    });
+
+    it('appends thinking stream without truncating to summaries', 0, () => {
+      let thoughts = appendThinkingStream([], '正在分析');
+      thoughts = appendThinkingStream(thoughts, '用户请求');
+      thoughts = appendThinkingStream(thoughts, '并准备生成 A2UI');
+
+      expect(thoughts.length).assertEqual(1);
+      expect(thoughts[0]).assertEqual('正在分析用户请求并准备生成 A2UI');
+    });
+
     it('extracts OpenAI reasoning content from SSE chunks', 0, () => {
       const chunk = 'data: {"choices":[{"delta":{"reasoning_content":"正在确认查询条件"}}]}\n\n' +
         'data: {"choices":[{"delta":{"content":"{\\"version\\":\\"v0.9.1\\"}"}}]}\n\n';
@@ -132,6 +163,24 @@ export default function a2uiParserTest() {
       expect(parsed.error.length > 0).assertTrue();
     });
 
+    it('accepts ThinkingCard component', 0, () => {
+      const stream =
+        '{"version":"v0.9.1","createSurface":{"surfaceId":"thinking","root":"root","title":"思考中","status":"thinking"}}\n' +
+        '{"version":"v0.9.1","updateComponents":{"surfaceId":"thinking","components":[{"id":"root","component":"SurfaceRoot","child":"think","status":"thinking"},{"id":"think","component":"ThinkingCard","title":"正在理解你的请求","body":"思考流写入中","status":"thinking","dataPath":"/thoughts"}]}}\n' +
+        '{"version":"v0.9.1","updateDataModel":{"surfaceId":"thinking","path":"/thoughts","value":["正在拆解请求"]}}\n';
+      const parsed = parseA2uiJsonl(stream);
+      const store = new A2uiSurfaceStore();
+
+      parsed.envelopes.forEach(envelope => {
+        store.apply(envelope);
+      });
+
+      const surface = store.getSurface();
+      expect(parsed.error).assertEqual('');
+      expect(surface.components.length).assertEqual(2);
+      expect(componentById(surface, 'think')?.component).assertEqual('ThinkingCard');
+    });
+
     it('rejects old aiphone ui envelopes', 0, () => {
       const parsed = parseA2uiJsonl('{"version":"aiphone.ui.v2","surface":{"id":"old"}}\n');
 
@@ -148,6 +197,67 @@ export default function a2uiParserTest() {
       expect(second.envelopes.length).assertEqual(1);
       expect(second.remainder).assertEqual('');
       expect(second.error).assertEqual('');
+    });
+
+    it('keeps longer thoughts when tool stub tries to overwrite', 0, () => {
+      const store = new A2uiSurfaceStore();
+      store.apply(parseA2uiEnvelope('{"createSurface":{"surfaceId":"s","root":"root","title":"Test"}}'));
+      store.apply(parseA2uiEnvelope(
+        '{"updateDataModel":{"surfaceId":"s","path":"/thoughts","value":["用户需要查询明天北京到上海高铁票，并准备调用 train.search"]}}'
+      ));
+      store.apply(parseA2uiEnvelope(
+        '{"updateDataModel":{"surfaceId":"s","path":"/thoughts","value":["正在识别请求约束","正在等待 12306 返回"]}}'
+      ));
+
+      expect(store.getSurface().dataModelJson.indexOf('用户需要查询明天北京到上海高铁票')).assertLarger(-1);
+    });
+
+    it('preserves thoughts when createSurface switches surfaceId', 0, () => {
+      const store = new A2uiSurfaceStore();
+      store.apply(parseA2uiEnvelope(
+        '{"createSurface":{"surfaceId":"surface_model_thinking","root":"root","title":"思考中","status":"thinking"}}'
+      ));
+      store.apply(parseA2uiEnvelope(
+        '{"updateDataModel":{"surfaceId":"surface_model_thinking","path":"/thoughts","value":["正在分析用户请求"]}}'
+      ));
+      store.apply(parseA2uiEnvelope(
+        '{"createSurface":{"surfaceId":"surface_model","root":"root","title":"正在准备查询","status":"calling_tool"}}'
+      ));
+
+      const surface = store.getSurface();
+      expect(surface.surfaceId).assertEqual('surface_model');
+      expect(surface.dataModelJson.indexOf('正在分析用户请求')).assertLarger(-1);
+    });
+
+    it('merges createSurface on same surfaceId without clearing components', 0, () => {
+      const store = new A2uiSurfaceStore();
+      store.apply(parseA2uiEnvelope('{"createSurface":{"surfaceId":"s","root":"root","title":"First","status":"thinking"}}'));
+      store.apply(parseA2uiEnvelope('{"updateComponents":{"surfaceId":"s","components":[{"id":"root","component":"SurfaceRoot","child":"body","title":"First","status":"ready"},{"id":"body","component":"Text","text":"hello","status":"ready"}]}}'));
+      store.apply(parseA2uiEnvelope('{"createSurface":{"surfaceId":"s","root":"root","title":"Second","status":"ready"}}'));
+
+      const surface = store.getSurface();
+      expect(surface.title).assertEqual('Second');
+      expect(surface.components.length).assertEqual(2);
+      expect(componentById(surface, 'body') !== null).assertTrue();
+    });
+
+    it('apply failure does not wipe existing surface state', 0, () => {
+      const store = new A2uiSurfaceStore();
+      store.apply(parseA2uiEnvelope('{"createSurface":{"surfaceId":"s","root":"root","title":"Test"}}'));
+      store.apply(parseA2uiEnvelope('{"updateComponents":{"surfaceId":"s","components":[{"id":"root","component":"SurfaceRoot","child":"body","title":"Test","status":"ready"},{"id":"body","component":"Text","text":"keep","status":"ready"}]}}'));
+      const failed = store.apply(parseA2uiEnvelope('{"updateComponents":{"surfaceId":"wrong","components":[{"id":"x","component":"Text","text":"x"}]}}'));
+
+      expect(failed.ok).assertFalse();
+      expect(store.getSurface().surfaceId).assertEqual('s');
+      expect(store.getSurface().components.length).assertEqual(2);
+    });
+
+    it('normalizes assistant debug when opening think tag is missing', 0, () => {
+      const raw = '正在确认出行日期</think>\n{"version":"v0.9.1"}\n';
+      const normalized = normalizeAssistantDebugDisplay(raw);
+
+      expect(normalized.indexOf('<think>')).assertEqual(0);
+      expect(normalized.indexOf('</think>')).assertLarger(0);
     });
   });
 }

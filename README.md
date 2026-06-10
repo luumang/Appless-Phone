@@ -2,6 +2,8 @@
 
 PocketAgent is a HarmonyOS prototype for an agentic phone experience. It turns a natural-language command into a native A2UI task surface, then routes supported actions through a local tool gateway instead of hard-coded demo cards.
 
+![PocketAgent running on HarmonyOS](docs/assets/pocketagent-current.jpeg)
+
 The current demo focuses on three real-world assistant tasks:
 
 - Train search through the 12306 public availability endpoint.

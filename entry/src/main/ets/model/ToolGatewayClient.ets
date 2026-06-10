@@ -63,29 +63,26 @@ export function isRegisteredToolId(toolId: string): boolean {
   return toolId === 'flight.search' || toolId === 'train.search' || toolId === 'food.search';
 }
 
-export function inferToolId(prompt: string): string {
-  const source = prompt.toLowerCase().replace('_', '.');
-  if (source.indexOf('flight') >= 0 || source.indexOf('航班') >= 0 || source.indexOf('机票') >= 0 || source.indexOf('飞机') >= 0) {
-    return 'flight.search';
-  }
-  if (source.indexOf('train') >= 0 || source.indexOf('12306') >= 0 || source.indexOf('火车') >= 0 || source.indexOf('高铁') >= 0 || source.indexOf('动车') >= 0 || source.indexOf('车票') >= 0) {
-    return 'train.search';
-  }
-  if (source.indexOf('food') >= 0 || source.indexOf('meal') >= 0 || source.indexOf('order') >= 0 || source.indexOf('外卖') >= 0 || source.indexOf('点餐') >= 0 || source.indexOf('午餐') >= 0 || source.indexOf('晚餐') >= 0) {
-    return 'food.search';
-  }
-  return '';
-}
-
-export async function callToolGateway(baseUrl: string, toolId: string, prompt: string, surfaceId: string, actionId: string, onSurface: A2uiSurfaceCallback): Promise<A2uiCallResult> {
+export async function callToolGateway(baseUrl: string, toolId: string, prompt: string, surfaceId: string, actionId: string, onSurface: A2uiSurfaceCallback, initialSurface: A2uiSurfaceState | null = null): Promise<A2uiCallResult> {
   const request = http.createHttp();
   const endpoint = buildToolGatewayUrl(baseUrl);
   const store = new A2uiSurfaceStore();
+  if (initialSurface !== null) {
+    store.seed(initialSurface);
+  }
   const decoder = util.TextDecoder.create('utf-8');
   let rawResponse = '';
   let remainder = '';
   let streamError = '';
+  let envelopeCount = 0;
   let streamEndResolve: () => void = () => {};
+  let streamEnded = false;
+  const finishStream = (): void => {
+    if (!streamEnded) {
+      streamEnded = true;
+      streamEndResolve();
+    }
+  };
   const streamEnd = new Promise<void>((resolve: () => void) => {
     streamEndResolve = resolve;
   });
@@ -112,22 +109,21 @@ export async function callToolGateway(baseUrl: string, toolId: string, prompt: s
     if (parsed.error.length > 0) {
       streamError = parsed.error;
       aiLogError('[AIPhone][ToolGatewayParseError] ' + parsed.error);
-      store.applyError('工具返回格式异常', parsed.error);
+    } else {
+      envelopeCount += parsed.envelopes.length;
+      const applyError = applyEnvelopes(store, parsed.envelopes);
+      if (applyError.length > 0) {
+        streamError = applyError;
+        aiLogError('[AIPhone][ToolGatewayApplyError] ' + applyError);
+      }
+      if (parsed.envelopes.length > 0) {
+        aiLogInfo('[AIPhone][ToolGatewayEnvelopes] count=' + parsed.envelopes.length.toString());
+      }
       onSurface(store.getSurface(), rawResponse);
-      return;
     }
-    const applyError = applyEnvelopes(store, parsed.envelopes);
-    if (applyError.length > 0) {
-      streamError = applyError;
-      aiLogError('[AIPhone][ToolGatewayApplyError] ' + applyError);
-    }
-    if (parsed.envelopes.length > 0) {
-      aiLogInfo('[AIPhone][ToolGatewayEnvelopes] count=' + parsed.envelopes.length.toString());
-    }
-    onSurface(store.getSurface(), rawResponse);
   });
   request.on('dataEnd', () => {
-    streamEndResolve();
+    finishStream();
   });
 
   try {
@@ -139,6 +135,7 @@ export async function callToolGateway(baseUrl: string, toolId: string, prompt: s
       readTimeout: 30000
     });
     aiLogInfo('[AIPhone][ToolGatewayResponse] code=' + responseCode.toString());
+    finishStream();
     await streamEnd;
     aiLogInfo('[AIPhone][ToolGatewayEnd] rawChars=' + rawResponse.length.toString());
 
@@ -181,7 +178,9 @@ export async function callToolGateway(baseUrl: string, toolId: string, prompt: s
     }
 
     if (streamError.length > 0) {
-      store.applyError('工具返回格式异常', streamError);
+      if (envelopeCount === 0) {
+        store.applyError('工具返回格式异常', streamError);
+      }
     }
     return {
       ok: streamError.length === 0,

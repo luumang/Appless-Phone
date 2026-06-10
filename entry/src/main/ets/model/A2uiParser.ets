@@ -10,6 +10,7 @@ import {
   A2UI_COMPONENT_SURFACE_ROOT,
   A2UI_COMPONENT_TEXT,
   A2UI_COMPONENT_THINKING_STREAM,
+  A2UI_COMPONENT_THINKING_CARD,
   A2UI_COMPONENT_TRAIN_OPTIONS,
   A2uiAction,
   A2uiComponent,
@@ -25,6 +26,7 @@ const KNOWN_COMPONENTS: string[] = [
   A2UI_COMPONENT_ACTION_BAR,
   A2UI_COMPONENT_ERROR_NOTICE,
   A2UI_COMPONENT_THINKING_STREAM,
+  A2UI_COMPONENT_THINKING_CARD,
   A2UI_COMPONENT_TRAIN_OPTIONS,
   A2UI_COMPONENT_FLIGHT_BOARD,
   A2UI_COMPONENT_FOOD_CHOICES,
@@ -32,8 +34,14 @@ const KNOWN_COMPONENTS: string[] = [
   A2UI_COMPONENT_INFO_ROWS
 ];
 
-function normalizeString(value: string | undefined | null, fallback: string): string {
-  if (value === undefined || value === null || value.length === 0) {
+function normalizeString(value: string | Object | undefined | null, fallback: string): string {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (typeof value !== 'string') {
+    return JSON.stringify(value);
+  }
+  if (value.length === 0) {
     return fallback;
   }
   return value;
@@ -63,7 +71,14 @@ function normalizeActions(value: A2uiAction[] | undefined | null): A2uiAction[] 
   }
   value.forEach((action: A2uiAction, index: number) => {
     const label = normalizeString(action.label, '');
-    const prompt = normalizeString(action.prompt, '');
+    let prompt = normalizeString(action.prompt, '');
+    const kind = normalizeString(action.kind, 'prompt');
+    if (kind !== 'prompt' && kind !== 'client' && kind !== 'input') {
+      throw new Error('A2UI action kind is not registered');
+    }
+    if (prompt.length === 0) {
+      prompt = normalizeString(action.id, '');
+    }
     if (label.length === 0 || prompt.length === 0) {
       throw new Error('A2UI action requires label and prompt');
     }
@@ -75,7 +90,8 @@ function normalizeActions(value: A2uiAction[] | undefined | null): A2uiAction[] 
       id: normalizeString(action.id, 'action_' + index.toString()),
       label: label,
       prompt: prompt,
-      variant: variant
+      variant: variant,
+      kind: kind
     });
   });
   return result;

@@ -2,8 +2,11 @@
 /oh_modules
 /local.properties
 /.idea
+**/.DS_Store
 **/build
 /.hvigor
+tool-gateway/.hvigor/
+.cursor/debug-*.log
 .cxx
 /.clangd
 /.clang-format
@@ -14,6 +17,7 @@
 docs/superpowers/
 tool-gateway/.env.local
 tool-gateway/.env
+tool-gateway/.smoke/
 
 # Local verification captures
 /aiphone-*.jpeg

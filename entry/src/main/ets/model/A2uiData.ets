@@ -5,6 +5,7 @@ import {
   A2uiFlightData,
   A2uiFoodData,
   A2uiLabelValueData,
+  A2uiRowGroupsData,
   A2uiRuntimeDataModel,
   A2uiSurfaceState,
   A2uiToolRequestData,
@@ -16,6 +17,20 @@ export type A2uiTrainOption = A2uiTrainData;
 export type A2uiFlightOption = A2uiFlightData;
 export type A2uiFoodOption = A2uiFoodData;
 export type A2uiToolRequest = A2uiToolRequestData;
+
+interface LooseRowData {
+  label?: Object | string | number | boolean | null;
+  value?: Object | string | number | boolean | null;
+  title?: Object | string | number | boolean | null;
+  subtitle?: Object | string | number | boolean | null;
+  direction?: Object | string | number | boolean | null;
+  type?: Object | string | number | boolean | null;
+  status?: Object | string | number | boolean | null;
+  note?: Object | string | number | boolean | null;
+  rows?: Object[];
+  items?: Object[];
+  body?: Object[];
+}
 
 function emptyModel(): A2uiRuntimeDataModel {
   return {
@@ -33,11 +48,41 @@ function emptyModel(): A2uiRuntimeDataModel {
     trip: {
       rows: []
     },
+    rowGroups: emptyRowGroups(),
     toolRequest: {
       toolId: '',
       prompt: '',
       actionId: ''
     }
+  };
+}
+
+function emptyRowGroups(): A2uiRowGroupsData {
+  return {
+    train: [],
+    flight: [],
+    food: []
+  };
+}
+
+function normalizeToolRequest(parsed: A2uiRuntimeDataModel, fallback: A2uiToolRequestData): A2uiToolRequestData {
+  if (parsed.toolRequest !== undefined && parsed.toolRequest !== null && parsed.toolRequest.toolId !== undefined) {
+    return parsed.toolRequest;
+  }
+  if (parsed.toolRequests !== undefined && parsed.toolRequests !== null && Array.isArray(parsed.toolRequests) && parsed.toolRequests.length > 0) {
+    return parsed.toolRequests[0];
+  }
+  return fallback;
+}
+
+function normalizeRowGroups(parsed: A2uiRuntimeDataModel, fallback: A2uiRowGroupsData): A2uiRowGroupsData {
+  if (parsed.rowGroups === undefined || parsed.rowGroups === null) {
+    return fallback;
+  }
+  return {
+    train: Array.isArray(parsed.rowGroups.train) ? parsed.rowGroups.train : fallback.train,
+    flight: Array.isArray(parsed.rowGroups.flight) ? parsed.rowGroups.flight : fallback.flight,
+    food: Array.isArray(parsed.rowGroups.food) ? parsed.rowGroups.food : fallback.food
   };
 }
 
@@ -55,11 +100,91 @@ function parseModel(surface: A2uiSurfaceState): A2uiRuntimeDataModel {
       trip: parsed.trip === undefined || parsed.trip === null ? fallback.trip : {
         rows: Array.isArray(parsed.trip.rows) ? parsed.trip.rows : fallback.trip.rows
       },
-      toolRequest: parsed.toolRequest === undefined || parsed.toolRequest === null ? fallback.toolRequest : parsed.toolRequest
+      rowGroups: normalizeRowGroups(parsed, fallback.rowGroups),
+      toolRequest: normalizeToolRequest(parsed, fallback.toolRequest),
+      toolRequests: Array.isArray(parsed.toolRequests) ? parsed.toolRequests : []
     };
   } catch (_error) {
     return fallback;
   }
+}
+
+function textOf(value: Object | string | number | boolean | null | undefined): string {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value.toString();
+  }
+  return JSON.stringify(value);
+}
+
+function joinRowParts(first: string, second: string, third: string): string {
+  let value = '';
+  if (first.length > 0) {
+    value = first;
+  }
+  if (second.length > 0) {
+    value = value.length > 0 ? value + ' · ' + second : second;
+  }
+  if (third.length > 0) {
+    value = value.length > 0 ? value + ' · ' + third : third;
+  }
+  return value;
+}
+
+function rowsFromLooseArray(value: Object[]): A2uiLabelValue[] {
+  const rows: A2uiLabelValue[] = [];
+  value.forEach((item: Object, index: number) => {
+    const record = item as LooseRowData;
+    const labelSource = textOf(record.label);
+    const titleSource = textOf(record.title);
+    const typeSource = textOf(record.type);
+    const directionSource = textOf(record.direction);
+    const valueSource = textOf(record.value);
+    const subtitleSource = textOf(record.subtitle);
+    const statusSource = textOf(record.status);
+    const noteSource = textOf(record.note);
+    const label = labelSource.length > 0 ? labelSource :
+      (titleSource.length > 0 ? titleSource :
+      (typeSource.length > 0 ? typeSource :
+      (directionSource.length > 0 ? directionSource : '信息 ' + (index + 1).toString())));
+    const valueText = valueSource.length > 0 ? valueSource :
+      (subtitleSource.length > 0 ? subtitleSource : joinRowParts(directionSource, statusSource, noteSource));
+    rows.push({
+      label: label,
+      value: valueText.length > 0 ? valueText : textOf(item)
+    });
+  });
+  return rows;
+}
+
+function labelValuesFromComponentBody(component: A2uiComponent): A2uiLabelValue[] {
+  if (component.body === undefined || component.body.length === 0) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(component.body) as Object;
+    if (Array.isArray(parsed)) {
+      return rowsFromLooseArray(parsed as Object[]);
+    }
+    const record = parsed as LooseRowData;
+    if (Array.isArray(record.rows)) {
+      return rowsFromLooseArray(record.rows as Object[]);
+    }
+    if (Array.isArray(record.items)) {
+      return rowsFromLooseArray(record.items as Object[]);
+    }
+    if (Array.isArray(record.body)) {
+      return rowsFromLooseArray(record.body as Object[]);
+    }
+  } catch (_error) {
+    return [];
+  }
+  return [];
 }
 
 export function resolveData(surface: A2uiSurfaceState, path: string | undefined): A2uiDataValue {
@@ -88,6 +213,15 @@ export function resolveData(surface: A2uiSurfaceState, path: string | undefined)
   if (path === '/trip/rows') {
     return model.trip.rows;
   }
+  if (path === '/rows/train') {
+    return model.rowGroups.train;
+  }
+  if (path === '/rows/flight') {
+    return model.rowGroups.flight;
+  }
+  if (path === '/rows/food') {
+    return model.rowGroups.food;
+  }
   if (path === '/toolRequest') {
     return model.toolRequest;
   }
@@ -105,7 +239,10 @@ export function labelValues(surface: A2uiSurfaceState, component: A2uiComponent)
   if (component.dataPath === '/rows') {
     return data as A2uiLabelValue[];
   }
-  return [];
+  if (component.dataPath === '/rows/train' || component.dataPath === '/rows/flight' || component.dataPath === '/rows/food') {
+    return data as A2uiLabelValue[];
+  }
+  return labelValuesFromComponentBody(component);
 }
 
 export function trainOptions(surface: A2uiSurfaceState, component: A2uiComponent): A2uiTrainOption[] {
