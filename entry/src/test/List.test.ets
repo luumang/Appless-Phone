@@ -7,6 +7,13 @@ import a2uiHomeStateTest from './A2uiHomeState.test';
 import a2uiRenderDataTest from './A2uiRenderData.test';
 import a2uiHomeToolRequestTest from './A2uiHomeToolRequest.test';
 import a2uiBusinessDataTest from './A2uiBusinessData.test';
+import dynamicToolRenderDataTest from './DynamicToolRenderData.test';
+import dynamicToolRegistryTest from './DynamicToolRegistry.test';
+import dynamicCredentialStoreTest from './DynamicCredentialStore.test';
+import genericMcpClientTest from './GenericMcpClient.test';
+import dynamicToolA2uiTest from './DynamicToolA2ui.test';
+import dynamicToolSamplesTest from './DynamicToolSamples.test';
+import dynamicToolDiscoveryTest from './DynamicToolDiscovery.test';
 import a2uiStyleLabMocksTest from './A2uiStyleLabMocks.test';
 import a2uiActionBarLayoutTest from './A2uiActionBarLayout.test';
 import a2uiHomeMotionTest from './A2uiHomeMotion.test';
@@ -14,6 +21,8 @@ import a2uiTrainOptionsStateTest from './A2uiTrainOptionsState.test';
 import a2uiButtonStyleTest from './A2uiButtonStyle.test';
 import a2uiHomeDebugSettingsTest from './A2uiHomeDebugSettings.test';
 import a2uiPartialUpdatePlannerTest from './A2uiPartialUpdatePlanner.test';
+import navigationCardSnapshotTest from './NavigationCardSnapshot.test';
+import a2uiSurfaceThrottleTest from './A2uiSurfaceThrottle.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -25,6 +34,13 @@ export default function testsuite() {
   a2uiRenderDataTest();
   a2uiHomeToolRequestTest();
   a2uiBusinessDataTest();
+  dynamicToolRenderDataTest();
+  dynamicToolRegistryTest();
+  dynamicCredentialStoreTest();
+  genericMcpClientTest();
+  dynamicToolA2uiTest();
+  dynamicToolSamplesTest();
+  dynamicToolDiscoveryTest();
   a2uiStyleLabMocksTest();
   a2uiActionBarLayoutTest();
   a2uiHomeMotionTest();
@@ -32,4 +48,6 @@ export default function testsuite() {
   a2uiButtonStyleTest();
   a2uiHomeDebugSettingsTest();
   a2uiPartialUpdatePlannerTest();
+  navigationCardSnapshotTest();
+  a2uiSurfaceThrottleTest();
 }

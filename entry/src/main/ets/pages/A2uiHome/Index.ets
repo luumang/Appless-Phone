@@ -2,6 +2,7 @@ import { LocalModelSettings, defaultLocalModelSettings } from '../../model/Local
 import router from '@ohos.router';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { formBindingData, formProvider } from '@kit.FormKit';
 import { notificationExtensionSubscription } from '@kit.NotificationKit';
 import {
   A2UI_COMPONENT_SOCIAL_INBOX,
@@ -9,6 +10,8 @@ import {
   A2uiAction,
   A2uiCallResult,
   A2uiComponent,
+  A2uiDynamicToolConnectData,
+  A2uiFoodData,
   A2uiMessage,
   A2uiRuntimeDataModel,
   A2uiSocialMessageData,
@@ -19,6 +22,12 @@ import { A2uiStreamMeta, callLocalModel, modelThinkCloseSeen } from '../../model
 import { A2uiSurfaceStore, createSeedA2uiSurface } from '../../model/A2uiSurfaceStore';
 import { aiLogError, aiLogInfo } from '../../model/AiphoneLogger';
 import { callToolGateway, configureLocalToolDebugConfig, defaultToolGatewayUrl, isRegisteredToolId } from '../../model/ToolGatewayClient';
+import {
+  NavigationCardSnapshot,
+  PreferencesNavigationCardSnapshotStore,
+  buildNavigationCardBindingData,
+  navigationCardSnapshotFromFoodOption
+} from '../../model/NavigationCardSnapshot';
 import {
   AccessibilityIngestProvider,
   NotificationIngestProvider,
@@ -31,7 +40,11 @@ import { detectSocialAccessibilitySync, detectWechatBundleSync } from '../../mod
 import { readNotificationCaptureArchive, SocialNotificationArchiveRead } from '../../model/SocialNotificationArchive';
 import { HomePage } from './components/HomePage';
 import { ConfigPage } from './components/ConfigPage';
-import { normalizeFoodProviderDelayMs } from './state/A2uiHomeDebugSettings';
+import {
+  A2UI_FOOD_PARTIAL_THROTTLE_DEFAULT_MS,
+  normalizeFoodPartialThrottleMs,
+  normalizeFoodProviderDelayMs
+} from './state/A2uiHomeDebugSettings';
 import {
   ConnectionPanelState,
   createInitialConnectionPanelState,
@@ -51,6 +64,7 @@ const TRAIN_EDIT_QUERY_PLACEHOLDER: string = '请输入具体车站和时间，�
 const SOCIAL_REPLY_UNAVAILABLE: string = '真实微信发送器未接入或当前设备未开放自动发送能力';
 const SOCIAL_NOTIFICATION_UNSUPPORTED_HINT: string = '当前 PC 系统未向三方应用开放通知内容订阅；系统开放后会显示真实微信新消息';
 const SOCIAL_MESSAGE_STORE: SocialMessageStore = new SocialMessageStore();
+const NAVIGATION_CARD_TTL_MS: number = 60 * 60 * 1000;
 
 function logSnippet(text: string): string {
   if (text.length <= LOG_SNIPPET_LIMIT) {
@@ -71,6 +85,7 @@ struct Index {
   @State customParametersJson: string = defaultLocalModelSettings().customParametersJson;
   @State foodProviderDelayEnabled: boolean = false;
   @State foodProviderDelayMs: string = '0';
+  @State foodPartialThrottleMs: string = A2UI_FOOD_PARTIAL_THROTTLE_DEFAULT_MS.toString();
   @State isBusy: boolean = false;
   @State connectionStatus: string = initialConnectionState.connectionStatus;
   @State connectionMessage: string = initialConnectionState.connectionMessage;
@@ -197,7 +212,21 @@ struct Index {
         toolId: '',
         prompt: '',
         actionId: ''
-      }
+      },
+      dynamicToolConnect: {
+        toolId: '',
+        prompt: '',
+        manifestId: '',
+        displayName: '',
+        sourceUrl: '',
+        status: '',
+        message: '',
+        credentialName: '',
+        credentialRef: '',
+        registrationUrl: '',
+        actions: []
+      },
+      genericToolResults: []
     };
   }
 
@@ -264,6 +293,14 @@ struct Index {
       return [];
     }
     return model.social.replies;
+  }
+
+  private currentDynamicToolConnect(): A2uiDynamicToolConnectData | null {
+    const model = this.parsedDataModel();
+    if (model === null || model.dynamicToolConnect === undefined || model.dynamicToolConnect === null) {
+      return null;
+    }
+    return model.dynamicToolConnect;
   }
 
   private selectedSocialMessage(): A2uiSocialMessageData | null {
@@ -426,6 +463,31 @@ struct Index {
       }));
       aiLogError('[AIPhone][SocialNotificationSettingsError] code=' + code +
         ' message=' + businessError.message);
+    }
+  }
+
+  private async openExternalUrl(url: string): Promise<void> {
+    if (url.length === 0) {
+      return;
+    }
+    try {
+      const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      await context.startAbility({
+        action: 'ohos.want.action.viewData',
+        uri: url
+      });
+    } catch (error) {
+      const businessError = error as BusinessError;
+      const message = '注册页打开失败：' + businessError.message;
+      this.applyPanelState(updateConnectionPanelState(this.currentPanelState(), {
+        ok: false,
+        status: 'error',
+        message: '无法打开注册页。',
+        requestDebug: this.lastModelRequest,
+        assistantDebug: this.lastModelOutput,
+        error: message
+      }));
+      aiLogError('[AIPhone][DynamicToolOpenRegistrationError] ' + message);
     }
   }
 
@@ -714,15 +776,104 @@ struct Index {
     await this.submitPrompt(this.inputText, this.inputText);
   }
 
-  private handleClientAction(action: A2uiAction): void {
+  private async handleClientAction(action: A2uiAction): Promise<void> {
     aiLogInfo('[AIPhone][A2uiHomeClientAction] id=' + action.id);
     if (action.id === 'social_select_message') {
       this.selectSocialMessageById(action.prompt);
       return;
     }
     if (action.id === 'social_open_notification_settings') {
-      this.openSocialNotificationSubscriptionSettings();
+      await this.openSocialNotificationSubscriptionSettings();
       return;
+    }
+    if (action.id === 'dynamic_open_registration') {
+      await this.openExternalUrl(action.prompt);
+      return;
+    }
+    if (action.id === 'dynamic_test_connection') {
+      const data = this.currentDynamicToolConnect();
+      if (data === null || data.toolId.length === 0) {
+        return;
+      }
+      const testPrompt = action.prompt.length > 0 ? action.prompt : (data.prompt.length > 0 ? data.prompt : data.toolId);
+      await this.callToolById(data.toolId, testPrompt, action.id);
+      return;
+    }
+  }
+
+  private navigationCardStore(): PreferencesNavigationCardSnapshotStore {
+    const context = this.getUIContext().getHostContext() as common.Context;
+    return new PreferencesNavigationCardSnapshotStore(context);
+  }
+
+  private async refreshNavigationCardForms(snapshot: NavigationCardSnapshot): Promise<void> {
+    const store = this.navigationCardStore();
+    const formIds = await store.getFormIds();
+    if (formIds.length === 0) {
+      aiLogInfo('[AIPhone][NavigationCardRefresh] noForms title=' + snapshot.title);
+      return;
+    }
+    const binding = formBindingData.createFormBindingData(buildNavigationCardBindingData(snapshot, Date.now()));
+    for (let index = 0; index < formIds.length; index++) {
+      const formId = formIds[index];
+      try {
+        await formProvider.updateForm(formId, binding);
+        aiLogInfo('[AIPhone][NavigationCardRefresh] formId=' + formId + ' ok=true');
+      } catch (error) {
+        const businessError = error as BusinessError;
+        aiLogError('[AIPhone][NavigationCardRefresh] formId=' + formId +
+          ' ok=false code=' + (businessError.code === undefined || businessError.code === null ? 'unknown' : businessError.code.toString()) +
+          ' message=' + businessError.message);
+      }
+    }
+  }
+
+  private async pinNavigationCard(item: A2uiFoodData): Promise<void> {
+    const now = Date.now();
+    const result = navigationCardSnapshotFromFoodOption(item, {
+      surfaceId: this.currentSurface.surfaceId,
+      toolId: 'food.search',
+      updatedAt: now,
+      expiresAt: now + NAVIGATION_CARD_TTL_MS
+    });
+    if (!result.ok || result.snapshot === undefined) {
+      this.applyPanelState(updateConnectionPanelState(this.currentPanelState(), {
+        ok: false,
+        status: 'error',
+        message: result.error,
+        requestDebug: this.lastModelRequest,
+        assistantDebug: this.lastModelOutput,
+        error: result.error
+      }));
+      aiLogError('[AIPhone][NavigationCardPin] ok=false reason=' + result.error);
+      return;
+    }
+    try {
+      const store = this.navigationCardStore();
+      await store.saveSnapshot(result.snapshot);
+      await this.refreshNavigationCardForms(result.snapshot);
+      this.applyPanelState(updateConnectionPanelState(this.currentPanelState(), {
+        ok: true,
+        status: 'ready',
+        message: '已固定为桌面导航卡片：' + result.snapshot.title,
+        requestDebug: this.lastModelRequest,
+        assistantDebug: this.lastModelOutput,
+        error: ''
+      }));
+      aiLogInfo('[AIPhone][NavigationCardPin] ok=true title=' + result.snapshot.title +
+        ' sourceTags=' + result.snapshot.sourceTags.join('/') +
+        ' mapUriChars=' + result.snapshot.mapUri.length.toString());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : JSON.stringify(error);
+      this.applyPanelState(updateConnectionPanelState(this.currentPanelState(), {
+        ok: false,
+        status: 'error',
+        message: '导航卡片保存失败',
+        requestDebug: this.lastModelRequest,
+        assistantDebug: this.lastModelOutput,
+        error: message
+      }));
+      aiLogError('[AIPhone][NavigationCardPin] ok=false saveError=' + message);
     }
   }
 
@@ -755,7 +906,7 @@ struct Index {
   private async sendAction(action: A2uiAction): Promise<void> {
     const kind = action.kind.length > 0 ? action.kind : 'prompt';
     if (kind === 'client') {
-      this.handleClientAction(action);
+      await this.handleClientAction(action);
       return;
     }
     if (kind === 'input') {
@@ -806,7 +957,8 @@ struct Index {
       ' gateway=' + TOOL_GATEWAY_URL);
     configureLocalToolDebugConfig({
       foodProviderDelayEnabled: this.foodProviderDelayEnabled,
-      foodProviderDelayMs: normalizeFoodProviderDelayMs(this.foodProviderDelayMs)
+      foodProviderDelayMs: normalizeFoodProviderDelayMs(this.foodProviderDelayMs),
+      foodPartialThrottleMs: normalizeFoodPartialThrottleMs(this.foodPartialThrottleMs)
     });
     this.markChecking('正在调用工具：' + toolId);
     const result: A2uiCallResult = await callToolGateway(
@@ -926,6 +1078,7 @@ struct Index {
         customParametersJson: $customParametersJson,
         foodProviderDelayEnabled: $foodProviderDelayEnabled,
         foodProviderDelayMs: $foodProviderDelayMs,
+        foodPartialThrottleMs: $foodPartialThrottleMs,
         showAdvancedSettings: $showAdvancedSettings,
         connectionStatus: this.connectionStatus,
         connectionMessage: this.connectionMessage,
@@ -972,6 +1125,9 @@ struct Index {
         },
         onAction: (action: A2uiAction) => {
           this.sendAction(action);
+        },
+        onPinNavigationCard: (item: A2uiFoodData) => {
+          this.pinNavigationCard(item);
         }
       })
     }
