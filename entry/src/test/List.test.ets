@@ -11,6 +11,8 @@ import dynamicToolRegistryTest from './DynamicToolRegistry.test';
 import dynamicCredentialStoreTest from './DynamicCredentialStore.test';
 import genericMcpClientTest from './GenericMcpClient.test';
 import dynamicToolA2uiTest from './DynamicToolA2ui.test';
+import composioConfigTest from './ComposioConfig.test';
+import composioDynamicBackendTest from './ComposioDynamicBackend.test';
 import dynamicToolSamplesTest from './DynamicToolSamples.test';
 import dynamicToolDiscoveryTest from './DynamicToolDiscovery.test';
 import a2uiStyleLabMocksTest from './A2uiStyleLabMocks.test';
@@ -71,6 +73,8 @@ export default function testsuite() {
   dynamicCredentialStoreTest();
   genericMcpClientTest();
   dynamicToolA2uiTest();
+  composioConfigTest();
+  composioDynamicBackendTest();
   dynamicToolSamplesTest();
   dynamicToolDiscoveryTest();
   a2uiStyleLabMocksTest();
