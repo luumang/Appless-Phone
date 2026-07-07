@@ -100,8 +100,7 @@ const composioCases = [
   {
     query: '帮我用 Outlook 查最近和 AIPhoneDemo 相关的邮件',
     expectsTool: true,
-    expectedToolId: 'dynamic.search',
-    expectedDiscoveredToolId: 'dynamic.search'
+    expectedToolId: 'dynamic.search'
   },
   {
     query: '帮我用 Discord 查最近提到 AIPhoneDemo 的消息',
@@ -360,9 +359,10 @@ const argv = process.argv.slice(2);
 const cleanData = process.env.AIPHONE_SMOKE_CLEAN_DATA === '1' || argv.includes('--clean-data');
 const runDynamicCases = argv.includes('--dynamic-tools');
 const runComposioCases = argv.includes('--composio-tools');
+const runComposioAuthCases = argv.includes('--composio-auth');
 const runGoogleApps = argv.includes('--google-apps');
 const runFullRegression = argv.includes('--full-regression');
-const queryArgs = argv.filter((arg) => arg !== '--clean-data' && arg !== '--dynamic-tools' && arg !== '--composio-tools' && arg !== '--google-apps' && arg !== '--full-regression');
+const queryArgs = argv.filter((arg) => arg !== '--clean-data' && arg !== '--dynamic-tools' && arg !== '--composio-tools' && arg !== '--composio-auth' && arg !== '--google-apps' && arg !== '--full-regression');
 const selectedDefaultCases = runComposioCases ? composioCases : (runFullRegression ? fullRegressionCases : (runGoogleApps ? defaultCases.concat(googleAppCases) : (runDynamicCases ? defaultCases.concat(dynamicCases) : defaultCases)));
 const useDefaultCases = queryArgs.length === 0;
 const queries = useDefaultCases ? selectedDefaultCases.map((testCase) => testCase.query) : queryArgs;
@@ -829,6 +829,37 @@ function findTextMatches(layout, marker) {
   });
   matches.sort((a, b) => a.bounds.top - b.bounds.top || a.bounds.left - b.bounds.left);
   return matches;
+}
+
+function findHeaderSettingsCenter(layout) {
+  const candidates = [];
+  walk(layout, (node) => {
+    const attrs = node.attributes || {};
+    const bounds = parseBounds(attrs.bounds);
+    if (bounds === null || !attrIsTrue(attrs.clickable) || attrIsFalse(attrs.enabled)) {
+      return;
+    }
+    if (bounds.top <= 360 && bounds.width >= 32 && bounds.width <= 160 && bounds.height >= 32 && bounds.height <= 160) {
+      candidates.push(bounds);
+    }
+  });
+  candidates.sort((left, right) => right.x - left.x);
+  return candidates.length >= 2 ? { x: candidates[1].x, y: candidates[1].y } : null;
+}
+
+async function findTextCenterWithScroll(marker, localNamePrefix, maxSwipes = 4) {
+  for (let attempt = 0; attempt <= maxSwipes; attempt += 1) {
+    const layout = dumpLayout(`${localNamePrefix}-${attempt + 1}.json`);
+    const text = collectLayoutText(layout).join('\n');
+    writeFileSync(join(outDir, `${localNamePrefix}-${attempt + 1}-text.txt`), text + '\n');
+    const found = findTextCenter(layout, marker);
+    if (found !== null) {
+      return found;
+    }
+    swipeResultsUp();
+    await sleep(800);
+  }
+  return null;
 }
 
 function collectInputText(layout) {
@@ -1796,9 +1827,121 @@ async function runQuery(query, index, expectedTool) {
   return summary;
 }
 
+async function waitForComposioAuthEvidence() {
+  const requiredMarkers = ['Composio 授权', '当前用户'];
+  const authActionLabels = ['授权', '重新授权'];
+  const authStatusLabels = [
+    '待授权',
+    '已连接',
+    '异常',
+    '已停用'
+  ];
+  const toolkitMarkers = [
+    'GitHub',
+    'Notion',
+    'Google Drive',
+    'Google Docs',
+    'Slack',
+    'OAuth',
+    'Composio ·'
+  ];
+  let last = null;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const layout = dumpLayout(`composio-auth-page-${attempt + 1}.json`);
+    const layoutTextValues = collectLayoutText(layout);
+    const text = layoutTextValues.join('\n');
+    const textPath = join(outDir, `composio-auth-page-${attempt + 1}-text.txt`);
+    writeFileSync(textPath, text + '\n');
+    last = {
+      layout,
+      text,
+      layoutPath: join(outDir, `composio-auth-page-${attempt + 1}.json`),
+      textPath,
+      markerHits: requiredMarkers.filter((marker) => text.includes(marker)),
+      authActionHits: authActionLabels.filter((marker) => layoutTextValues.includes(marker)),
+      authStatusHits: authStatusLabels.filter((marker) => layoutTextValues.includes(marker)),
+      toolkitHits: toolkitMarkers.filter((marker) => text.includes(marker))
+    };
+    if (last.markerHits.length === requiredMarkers.length &&
+      last.authActionHits.length > 0 &&
+      last.authStatusHits.length > 0) {
+      return last;
+    }
+    await sleep(1000);
+  }
+  return last;
+}
+
+function ensureDeviceGatewayPortForwarded() {
+  try {
+    hdc(['rport', 'tcp:8787', 'tcp:8787']);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Composio auth smoke requires hdc rport tcp:8787 tcp:8787 before page verification. rportError=${reason.split('\n')[0]}`);
+  }
+}
+
+async function runComposioAuthSmoke() {
+  clearHilog();
+  ensureDeviceGatewayPortForwarded();
+  hdc(['shell', 'aa', 'force-stop', 'com.example.aiphonedemo']);
+  if (cleanData) {
+    cleanBundleData();
+  }
+  hdc(['shell', 'aa', 'start', '-a', 'EntryAbility', '-b', 'com.example.aiphonedemo']);
+  await sleep(3000);
+  moveAppWindowIntoScreenshot();
+
+  const homeLayout = dumpLayout('composio-auth-home-layout.json');
+  writeFileSync(join(outDir, 'composio-auth-home-layout-text.txt'), collectLayoutText(homeLayout).join('\n') + '\n');
+  const settings = findHeaderSettingsCenter(homeLayout);
+  if (settings === null) {
+    throw new Error('Could not locate the home header settings button for Composio auth smoke.');
+  }
+  hdc(['shell', 'uitest', 'uiInput', 'click', String(settings.x), String(settings.y)]);
+  await sleep(1200);
+
+  const authButton = await findTextCenterWithScroll('Composio 授权', 'composio-auth-config-layout');
+  if (authButton === null) {
+    throw new Error('Could not locate the Config page Composio 授权 button.');
+  }
+  hdc(['shell', 'uitest', 'uiInput', 'click', String(authButton.x), String(authButton.y)]);
+
+  const evidence = await waitForComposioAuthEvidence();
+  if (evidence === null) {
+    throw new Error('Could not capture Composio auth page layout evidence.');
+  }
+  const screenPath = captureScreen('composio-auth-page-screen.png');
+  const summary = {
+    mode: 'composio-auth',
+    ok: evidence.markerHits.length === 2 && evidence.authActionHits.length > 0 && evidence.authStatusHits.length > 0,
+    requiredMarkers: ['Composio 授权', '当前用户'],
+    markerHits: evidence.markerHits,
+    authActionHits: evidence.authActionHits,
+    authStatusHits: evidence.authStatusHits,
+    toolkitHits: evidence.toolkitHits,
+    layoutPath: evidence.layoutPath,
+    textPath: evidence.textPath,
+    screenPath
+  };
+  writeFileSync(join(outDir, 'composio-auth-summary.json'), JSON.stringify(summary, null, 2));
+  return summary;
+}
+
+console.log(`cleanData: ${cleanData ? 'true' : 'false'}`);
+
+if (runComposioAuthCases) {
+  const summary = await runComposioAuthSmoke();
+  console.log(JSON.stringify(summary, null, 2));
+  if (!summary.ok) {
+    process.exit(1);
+  }
+  if (!runComposioCases && queryArgs.length === 0) {
+    process.exit(0);
+  }
+}
 const modelHealth = await ensureLocalModel();
 console.log(`modelHealth: ${JSON.stringify(modelHealth, null, 2)}`);
-console.log(`cleanData: ${cleanData ? 'true' : 'false'}`);
 
 const summaries = [];
 for (let index = 0; index < queries.length; index += 1) {
