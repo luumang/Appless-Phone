@@ -53,6 +53,8 @@ export struct HomePage {
   @Prop currentSurface: A2uiSurfaceState = emptyA2uiSurface();
   @Prop htmlHomeHtml: string = '';
   @Prop surfaceRenderTick: number = 0;
+  @Prop luckinInlinePatchJson: string = '';
+  @Prop luckinInlinePatchTick: number = 0;
   @Prop isAwaitingFirstSurface: boolean = false;
   @Prop inputPlaceholder: string = '告诉 Appless Phone 你想完成什么';
   @Prop isVoiceListening: boolean = false;
@@ -384,6 +386,8 @@ export struct HomePage {
           html: this.htmlHomeHtml,
           isBusy: this.isBusy,
           renderTick: this.surfaceRenderTick,
+          luckinInlinePatchJson: this.luckinInlinePatchJson,
+          luckinInlinePatchTick: this.luckinInlinePatchTick,
           onAction: this.onAction
         })
         .layoutWeight(1)
