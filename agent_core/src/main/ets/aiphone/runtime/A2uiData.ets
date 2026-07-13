@@ -63,6 +63,7 @@ interface LooseGenericToolResultData {
   summary?: Object | string | number | boolean | null;
   rows?: Object[];
   rawPreview?: Object | string | number | boolean | null;
+  actions?: A2uiAction[];
 }
 
 function emptyModel(): A2uiRuntimeDataModel {
@@ -211,7 +212,7 @@ function normalizeGenericToolResults(parsed: A2uiRuntimeDataModel, fallback: A2u
       continue;
     }
     const result = source as LooseGenericToolResultData;
-    normalized.push({
+    const normalizedResult: A2uiGenericToolResultData = {
       sourceTag: textOf(result.sourceTag),
       toolName: textOf(result.toolName),
       title: textOf(result.title),
@@ -219,7 +220,11 @@ function normalizeGenericToolResults(parsed: A2uiRuntimeDataModel, fallback: A2u
       summary: textOf(result.summary),
       rows: normalizeGenericToolResultRows(result.rows),
       rawPreview: textOf(result.rawPreview)
-    });
+    };
+    if (Array.isArray(result.actions)) {
+      normalizedResult.actions = result.actions;
+    }
+    normalized.push(normalizedResult);
   }
   return normalized;
 }
