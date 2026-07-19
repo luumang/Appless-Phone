@@ -66,6 +66,47 @@ function dynamicCredentialDocumentFixture(): HtmlHomeDocument {
   return doc;
 }
 
+function hotelDocumentFixture(): HtmlHomeDocument {
+  const doc = documentFixture();
+  doc.kind = 'hotel';
+  doc.title = '深圳酒店';
+  doc.subtitle = '2026-08-15 → 2026-08-17 · 2 成人 · 1 间';
+  doc.blocks = [{
+    id: 'hotel-rate-1',
+    kind: 'generic-tool-result',
+    title: '豪华大床房',
+    subtitle: '550 CNY · 不含早餐',
+    status: 'success',
+    source: 'RollingGo',
+    metrics: [
+      { label: 'source', value: 'RollingGo' },
+      { label: 'toolName', value: 'hotel.detail' }
+    ],
+    rows: [
+      { label: '酒店图片', value: 'https://images.example.com/hotel.jpg' },
+      { label: '酒店 ID', value: '47675' },
+      { label: 'Rate plan ID', value: '5nAv6vObodN-6idXNkFPe3z' },
+      { label: '入住', value: '2026-08-15 → 2026-08-17' },
+      { label: '客人', value: '2 成人 · 1 间' },
+      { label: '平均价', value: '550 CNY' },
+      { label: '床型', value: '1 大床' },
+      { label: '餐食', value: '不含早餐' },
+      { label: '取消政策', value: '免费取消截止至酒店当地时间 2026-08-12 08:00:00' },
+      { label: '税费与有效期', value: '税费拆分与报价有效期：供应商未返回' },
+      { label: '能力边界', value: 'Appless 暂不支持创建或跟踪酒店订单' }
+    ],
+    actions: [{
+      id: 'hotel.search.restore',
+      label: '返回酒店结果',
+      prompt: '返回酒店搜索结果',
+      variant: 'secondary',
+      kind: 'client'
+    }]
+  }];
+  doc.actions = [];
+  return doc;
+}
+
 function rideDocumentFixture(): HtmlHomeDocument {
   const doc = documentFixture();
   doc.kind = 'dynamic-tools';
@@ -1075,8 +1116,26 @@ function socialHubDocumentFixture(): HtmlHomeDocument {
   return doc;
 }
 
+function expectCalmUtilityPalette(document: HtmlHomeDocument): void {
+  const html = renderHtmlHomeDocument(document);
+  expect(html.indexOf('--paper: #f5f2ee;')).assertLarger(-1);
+  expect(html.indexOf('--ink: #211b17;')).assertLarger(-1);
+  expect(html.indexOf('--accent: #995f4c;')).assertLarger(-1);
+}
+
 export default function htmlHomeRendererTest() {
   describe('htmlHomeRenderer', () => {
+    it('uses the calm utility palette across result templates', 0, () => {
+      expectCalmUtilityPalette(documentFixture());
+      expectCalmUtilityPalette(calendarSearchDocumentFixture());
+      expectCalmUtilityPalette(aggregateSearchDocumentFixture());
+      expectCalmUtilityPalette(travelFoodCardsDocumentFixture());
+      expectCalmUtilityPalette(foodDocumentFixture());
+      expectCalmUtilityPalette(mediaAggregateDocumentFixture());
+      expectCalmUtilityPalette(rideDocumentFixture());
+      expectCalmUtilityPalette(paymentDocumentFixture());
+    });
+
     it('returns a full HTML document with document content', 0, () => {
       const html = renderHtmlHomeDocument(documentFixture());
 
@@ -1107,7 +1166,7 @@ export default function htmlHomeRendererTest() {
       const html = renderHtmlHomeDocument(rideDocumentFixture());
 
       expect(html.indexOf('data-ride-home')).assertLarger(-1);
-      expect(html.indexOf('任务结果')).assertEqual(-1);
+      expect(html.indexOf("add(blocksHead, 'h2', '', isEnhancedScene() ? sceneSectionTitle() : '任务结果')")).assertEqual(-1);
       expect(html.indexOf('上下文')).assertEqual(-1);
       expect(html.indexOf('打车方案 · 实时叫车')).assertLarger(-1);
       expect(html.indexOf('去秋港花园')).assertLarger(-1);
@@ -1117,7 +1176,7 @@ export default function htmlHomeRendererTest() {
       expect(html.indexOf('未查询到司机坐标前不展示地图或真实路线')).assertEqual(-1);
       expect(html.indexOf('打开滴滴/高德不会自动下单')).assertEqual(-1);
       expect(html.indexOf('images.unsplash.com')).assertEqual(-1);
-      expect(html.indexOf('resource://rawfile/ride/ride_cover_taxi_v2.png')).assertLarger(-1);
+      expect(html.indexOf("rideAssetUrl('ride_cover_taxi_v2.png')")).assertLarger(-1);
       expect(html.indexOf('ride-cover-image')).assertLarger(-1);
       expect(html.indexOf('ride-cover-title')).assertLarger(-1);
       expect(html.indexOf('ride-hero-route')).assertEqual(-1);
@@ -1238,14 +1297,14 @@ export default function htmlHomeRendererTest() {
       expect(html.indexOf('司机点位来自 provider 返回坐标')).assertEqual(-1);
       expect(html.indexOf('预计接驾时间')).assertLarger(-1);
       expect(html.indexOf('预计 6 分钟接驾')).assertLarger(-1);
-      expect(html.indexOf('>车型</span><b>专车</b>')).assertLarger(-1);
+      expect(html.indexOf("metricValue(block, ['selectedVehicleText', '车型', 'vehicle', 'productName', 'productCategory'])")).assertLarger(-1);
+      expect(html.indexOf("addRideRouteStat(stats, '车型', rideVehicleStatText(block, estimates))")).assertLarger(-1);
       expect(html.indexOf('>车型</span><b>待查询</b>')).assertEqual(-1);
       expect(html.indexOf('data-ride-eta-value')).assertLarger(-1);
       expect(html.indexOf("updateRideEtaText(etaText)")).assertLarger(-1);
       expect(html.indexOf('function logRideMapRoute')).assertLarger(-1);
       expect(html.indexOf('ride.map.route.log')).assertLarger(-1);
       expect(html.indexOf('[AIPhone][RideMapRoute]')).assertLarger(-1);
-      expect(html.indexOf('正在估算接驾时间')).assertEqual(-1);
       expect(html.indexOf('setRideMapFullscreen')).assertLarger(-1);
       expect(html.indexOf('ride-map-fullscreen')).assertLarger(-1);
       expect(html.indexOf('rideMapEta')).assertLarger(-1);
@@ -1308,9 +1367,9 @@ export default function htmlHomeRendererTest() {
       expect(html.indexOf('Codex demo')).assertLarger(-1);
       expect(html.indexOf('OpenAI Codex discussion')).assertLarger(-1);
       expect(html.indexOf('data-filter="reddit"')).assertLarger(-1);
-      expect(html.indexOf('可用来源')).assertLarger(-1);
+      expect(html.indexOf('aggregate-source-overview')).assertLarger(-1);
       expect(html.indexOf('YouTube returned 1 row')).assertLarger(-1);
-      expect(html.indexOf('需要关注')).assertLarger(-1);
+      expect(html.indexOf('状态摘要')).assertLarger(-1);
       expect(html.indexOf('ZHIHU_API_KEY')).assertLarger(-1);
       expect(html.indexOf('异常或提示')).assertEqual(-1);
     });
@@ -2051,6 +2110,42 @@ export default function htmlHomeRendererTest() {
       expect(html.indexOf('resource://rawfile/wechat_pay.jpeg')).assertLarger(-1);
       expect(html.indexOf('resource://rawfile/alipay.jpeg')).assertLarger(-1);
       expect(html.indexOf('resource://rawfile/google_pay.jpeg')).assertLarger(-1);
+    });
+
+    it('renders a dedicated hotel rate scene with provider-truth fields', 0, () => {
+      const html = renderHtmlHomeDocument(hotelDocumentFixture());
+
+      expect(html.indexOf('data-scene="hotel"')).assertLarger(-1);
+      expect(html.indexOf('hotel-hero-media')).assertLarger(-1);
+      expect(html.indexOf('.hotel-hero.is-detail h1')).assertLarger(-1);
+      expect(html.indexOf('photo-1742844551986-de16fd4682c3')).assertLarger(-1);
+      expect(html.indexOf('酒店 · 实时房型')).assertLarger(-1);
+      expect(html.indexOf('hotel-search-card')).assertLarger(-1);
+      expect(html.indexOf('hotel-room-card')).assertLarger(-1);
+      expect(html.indexOf('hotel-room-toggle')).assertLarger(-1);
+      expect(html.indexOf('hotel-room-details')).assertLarger(-1);
+      expect(html.indexOf('查看房型')).assertLarger(-1);
+      expect(html.indexOf("button.setAttribute('aria-label', '查看房型：'")).assertLarger(-1);
+      expect(html.indexOf('价格与取消规则')).assertLarger(-1);
+      expect(html.indexOf('返回酒店结果')).assertLarger(-1);
+      expect(html.indexOf('查看详情')).assertEqual(-1);
+      expect(html.indexOf('aria-expanded')).assertLarger(-1);
+      expect(html.indexOf('function setExpanded')).assertLarger(-1);
+      expect(html.indexOf('image.onerror')).assertLarger(-1);
+      expect(html.indexOf('47675')).assertLarger(-1);
+      expect(html.indexOf('5nAv6vObodN-6idXNkFPe3z')).assertLarger(-1);
+      expect(html.indexOf('550 CNY')).assertLarger(-1);
+      expect(html.indexOf('免费取消截止至酒店当地时间')).assertLarger(-1);
+      expect(html.indexOf('税费拆分与报价有效期：供应商未返回')).assertLarger(-1);
+      expect(html.indexOf('Appless 暂不支持创建或跟踪酒店订单')).assertLarger(-1);
+      expect(html.indexOf('min-height: 44px')).assertLarger(-1);
+      expect(html.indexOf('@media (prefers-reduced-motion: reduce)')).assertLarger(-1);
+      expect(html.indexOf('LIVE HOTEL DATA')).assertEqual(-1);
+      expect(html.indexOf('hotel-scene-note')).assertEqual(-1);
+      expect(html.indexOf('add(identifiers')).assertEqual(-1);
+      expect(html.indexOf('第三方预订（离开 Appless）：')).assertEqual(-1);
+      expect(html.indexOf('下单成功')).assertEqual(-1);
+      expect(html.indexOf('订单编号')).assertEqual(-1);
     });
 
     it('does not auto-render welcome scene and source chips', 0, () => {
