@@ -428,6 +428,7 @@ struct Index {
   @State foodProviderDelayEnabled: boolean = false;
   @State foodProviderDelayMs: string = '0';
   @State foodPartialThrottleMs: string = A2UI_FOOD_PARTIAL_THROTTLE_DEFAULT_MS.toString();
+  @State ignoreToolSurfaceUpdates: boolean = false;
   @State htmlHomeDebugExportEnabled: boolean = false;
   @State htmlHomeDebugExportPath: string = '';
   @State didiMcpSandboxEnabled: boolean = true;
@@ -1063,7 +1064,8 @@ struct Index {
       baseUrl: this.baseUrl,
       model: this.selectedModel,
       apiKey: this.apiKey,
-      customParametersJson: this.customParametersJson
+      customParametersJson: this.customParametersJson,
+      ignoreToolSurfaceUpdates: this.ignoreToolSurfaceUpdates
     };
   }
 
@@ -1161,10 +1163,10 @@ struct Index {
 
   private currentHtmlHomeCacheKey(): string {
     const needsInputText = shouldShowQueryPendingSurface(this.isBusy, this.isAwaitingFirstSurface);
-    const sequenceKey = this.isBusy ? 'busy' : this.currentSurface.sequence.toString();
     return [
       this.currentSurface.surfaceId,
-      sequenceKey,
+      this.currentSurface.sequence.toString(),
+      this.surfaceRenderTick.toString(),
       this.currentSurface.status,
       this.isBusy ? 'busy' : 'idle',
       this.isAwaitingFirstSurface ? 'awaiting' : 'ready',
@@ -1746,6 +1748,11 @@ struct Index {
     this.isAwaitingFirstSurface = true;
     this.markChecking('正在生成 A2UI...');
     try {
+      configureLocalToolDebugConfig({
+        foodProviderDelayEnabled: this.foodProviderDelayEnabled,
+        foodProviderDelayMs: normalizeFoodProviderDelayMs(this.foodProviderDelayMs),
+        foodPartialThrottleMs: normalizeFoodPartialThrottleMs(this.foodPartialThrottleMs)
+      });
       this.markChecking('正在生成 A2UI...');
       const result: A2uiCallResult = await callLocalModel(
         this.getSettings(),
@@ -3839,6 +3846,7 @@ struct Index {
         foodProviderDelayEnabled: $foodProviderDelayEnabled,
         foodProviderDelayMs: $foodProviderDelayMs,
         foodPartialThrottleMs: $foodPartialThrottleMs,
+        ignoreToolSurfaceUpdates: $ignoreToolSurfaceUpdates,
         htmlHomeDebugExportEnabled: $htmlHomeDebugExportEnabled,
         htmlHomeDebugExportPath: this.htmlHomeDebugExportPath,
         didiMcpSandboxEnabled: $didiMcpSandboxEnabled,
